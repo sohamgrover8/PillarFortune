@@ -1,12 +1,12 @@
 package me.soham.pillarfortune;
 
-import org.bukkit.Bukkit;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.World;
+import org.bukkit.*;
+import org.bukkit.configuration.file.FileConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -14,47 +14,111 @@ import org.bukkit.scheduler.BukkitRunnable;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
+import java.io.File;
+import java.io.IOException;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 
 public class PillarFortune extends JavaPlugin implements Listener {
 
     private BukkitRunnable countdownTask;
-    private int countdown = 30;
+    private BukkitRunnable lavaTask;
+
+    private boolean gameRunning = false;
+
+    private int countdown;
+    private int lavaY;
+
+    private final Set<Player> alivePlayers = new HashSet<>();
+
+    // CONFIG
+    private int minPlayers, countdownSeconds, platformRadius, pillarHeight;
+    private int spawnRadius, lavaStartY, lavaIntervalSeconds;
+    private Location center;
+
+    // STATS
+    private File statsFile;
+    private FileConfiguration stats;
 
     @Override
     public void onEnable() {
+        saveDefaultConfig();
+        loadConfig();
+        loadStats();
+
         Bukkit.getPluginManager().registerEvents(this, this);
         getLogger().info("PillarFortune enabled");
     }
 
-    @EventHandler
-    public void onJoin(PlayerJoinEvent event) {
-        World world = event.getPlayer().getWorld();
+    // ================= CONFIG =================
+    private void loadConfig() {
+        minPlayers = getConfig().getInt("game.min-players");
+        countdownSeconds = getConfig().getInt("game.countdown-seconds");
 
-        if (world.getPlayers().size() >= 2 && countdownTask == null) {
-            startCountdown(world);
+        platformRadius = getConfig().getInt("platform.platform-radius");
+        spawnRadius = getConfig().getInt("pillars.spawn-radius");
+        pillarHeight = getConfig().getInt("pillars.height");
+
+        lavaStartY = getConfig().getInt("lava.start-y");
+        lavaIntervalSeconds = getConfig().getInt("lava.rise-interval-seconds");
+
+        World world = Bukkit.getWorlds().get(0);
+        center = new Location(
+                world,
+                getConfig().getInt("platform.center-x"),
+                getConfig().getInt("platform.center-y"),
+                getConfig().getInt("platform.center-z")
+        );
+    }
+
+    // ================= STATS =================
+    private void loadStats() {
+        statsFile = new File(getDataFolder(), "stats.yml");
+        if (!statsFile.exists()) saveResource("stats.yml", false);
+        stats = YamlConfiguration.loadConfiguration(statsFile);
+    }
+
+    private void saveStats() {
+        try {
+            stats.save(statsFile);
+        } catch (IOException e) {
+            e.printStackTrace();
         }
     }
 
+    // ================= JOIN =================
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        Player p = event.getPlayer();
+
+        if (gameRunning) {
+            p.setGameMode(GameMode.SPECTATOR);
+            p.teleport(center.clone().add(0, 10, 0));
+            return;
+        }
+
+        p.setGameMode(GameMode.ADVENTURE);
+
+        if (p.getWorld().getPlayers().size() >= minPlayers && countdownTask == null) {
+            startCountdown(p.getWorld());
+        }
+    }
+
+    // ================= COUNTDOWN =================
     private void startCountdown(World world) {
-        countdown = 30;
+        countdown = countdownSeconds;
 
         countdownTask = new BukkitRunnable() {
             @Override
             public void run() {
-
-                // Stop countdown if players drop below 2
-                if (world.getPlayers().size() < 2) {
-                    world.sendMessage(
-                            Component.text("Not enough players. Countdown stopped.")
-                                    .color(NamedTextColor.RED)
-                    );
+                if (world.getPlayers().size() < minPlayers) {
                     countdownTask = null;
                     cancel();
                     return;
                 }
 
-                // Start game
                 if (countdown == 0) {
                     cancel();
                     countdownTask = null;
@@ -62,46 +126,109 @@ public class PillarFortune extends JavaPlugin implements Listener {
                     return;
                 }
 
-                // Countdown message
-                world.sendMessage(
-                        Component.text("Game starts in " + countdown + "s")
-                                .color(NamedTextColor.YELLOW)
-                );
-
+                for (Player p : world.getPlayers()) {
+                    p.sendActionBar(Component.text("Starting in " + countdown + "s")
+                            .color(NamedTextColor.YELLOW));
+                }
                 countdown--;
             }
         };
-
         countdownTask.runTaskTimer(this, 0L, 20L);
     }
 
+    // ================= GAME START =================
     private void startGame(World world) {
-        List<Player> players = world.getPlayers();
+        gameRunning = true;
+        alivePlayers.clear();
+        alivePlayers.addAll(world.getPlayers());
 
-        Location center = new Location(world, 0, 100, 0);
-        double radius = 25;
-        int height = 12;
-
-        for (int i = 0; i < players.size(); i++) {
-            double angle = 2 * Math.PI * i / players.size();
-
-            double x = center.getX() + radius * Math.cos(angle);
-            double z = center.getZ() + radius * Math.sin(angle);
-
-            Location base = new Location(world, x, center.getY(), z);
-
-            // Build pillar
-            for (int y = 0; y < height; y++) {
-                base.clone().add(0, y, 0).getBlock().setType(Material.BEDROCK);
-            }
-
-            // Teleport player
-            players.get(i).teleport(base.clone().add(0, height + 1, 0));
+        for (Player p : alivePlayers) {
+            addStat(p.getUniqueId(), "games");
+            p.setGameMode(GameMode.SURVIVAL);
         }
 
-        world.sendMessage(
-                Component.text("Pillar of Fortune started!")
-                        .color(NamedTextColor.GREEN)
-        );
+        for (int i = 0; i < alivePlayers.size(); i++) {
+            Player p = alivePlayers.stream().toList().get(i);
+
+            double angle = 2 * Math.PI * i / alivePlayers.size();
+            Location base = new Location(
+                    world,
+                    center.getX() + spawnRadius * Math.cos(angle),
+                    center.getY(),
+                    center.getZ() + spawnRadius * Math.sin(angle)
+            );
+
+            for (int y = 0; y < pillarHeight; y++) {
+                base.clone().add(0, y, 0).getBlock().setType(Material.BEDROCK);
+            }
+            p.teleport(base.clone().add(0, pillarHeight + 1, 0));
+        }
+
+        startLava(world);
+    }
+
+    // ================= LAVA =================
+    private void startLava(World world) {
+        lavaY = lavaStartY;
+
+        lavaTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                for (int x = -platformRadius; x <= platformRadius; x++) {
+                    for (int z = -platformRadius; z <= platformRadius; z++) {
+                        if (x * x + z * z > platformRadius * platformRadius) continue;
+
+                        Location l = new Location(world,
+                                center.getX() + x, lavaY, center.getZ() + z);
+                        if (l.getBlock().getType() == Material.AIR)
+                            l.getBlock().setType(Material.LAVA);
+                    }
+                }
+                lavaY++;
+            }
+        };
+        lavaTask.runTaskTimer(this, 0L, lavaIntervalSeconds * 20L);
+    }
+
+    // ================= DEATH =================
+    @EventHandler
+    public void onDeath(PlayerDeathEvent e) {
+        Player p = e.getEntity();
+        if (!alivePlayers.remove(p)) return;
+
+        p.setGameMode(GameMode.SPECTATOR);
+        checkWin(p.getWorld());
+    }
+
+    // ================= WIN + RESTART =================
+    private void checkWin(World world) {
+        if (alivePlayers.size() != 1) return;
+
+        Player winner = alivePlayers.iterator().next();
+        addStat(winner.getUniqueId(), "wins");
+
+        world.sendMessage(Component.text(winner.getName() + " won!")
+                .color(NamedTextColor.GOLD));
+
+        if (lavaTask != null) lavaTask.cancel();
+
+        Bukkit.getScheduler().runTaskLater(this, () -> restartGame(world), 200L);
+    }
+
+    private void restartGame(World world) {
+        gameRunning = false;
+        alivePlayers.clear();
+
+        for (Player p : world.getPlayers()) {
+            p.teleport(center);
+            p.setGameMode(GameMode.ADVENTURE);
+        }
+    }
+
+    // ================= STATS UTILS =================
+    private void addStat(UUID uuid, String key) {
+        String path = uuid + "." + key;
+        stats.set(path, stats.getInt(path) + 1);
+        saveStats();
     }
 }
