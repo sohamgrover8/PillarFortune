@@ -1,8 +1,6 @@
 package me.soham.pillarfortune;
 
 import org.bukkit.*;
-import org.bukkit.configuration.file.FileConfiguration;
-import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -14,12 +12,9 @@ import org.bukkit.scheduler.BukkitRunnable;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
 
 public class PillarFortune extends JavaPlugin implements Listener {
 
@@ -33,20 +28,21 @@ public class PillarFortune extends JavaPlugin implements Listener {
 
     private final Set<Player> alivePlayers = new HashSet<>();
 
-    // CONFIG
-    private int minPlayers, countdownSeconds, platformRadius, pillarHeight;
-    private int spawnRadius, lavaStartY, lavaIntervalSeconds;
-    private Location center;
+    // CONFIG VALUES
+    private int minPlayers;
+    private int countdownSeconds;
+    private int platformRadius;
+    private int pillarHeight;
+    private int spawnRadius;
+    private int lavaStartY;
+    private int lavaIntervalSeconds;
 
-    // STATS
-    private File statsFile;
-    private FileConfiguration stats;
+    private Location center;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
         loadConfig();
-        loadStats();
 
         Bukkit.getPluginManager().registerEvents(this, this);
         getLogger().info("PillarFortune enabled");
@@ -71,21 +67,6 @@ public class PillarFortune extends JavaPlugin implements Listener {
                 getConfig().getInt("platform.center-y"),
                 getConfig().getInt("platform.center-z")
         );
-    }
-
-    // ================= STATS =================
-    private void loadStats() {
-        statsFile = new File(getDataFolder(), "stats.yml");
-        if (!statsFile.exists()) saveResource("stats.yml", false);
-        stats = YamlConfiguration.loadConfiguration(statsFile);
-    }
-
-    private void saveStats() {
-        try {
-            stats.save(statsFile);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
     }
 
     // ================= JOIN =================
@@ -113,6 +94,7 @@ public class PillarFortune extends JavaPlugin implements Listener {
         countdownTask = new BukkitRunnable() {
             @Override
             public void run() {
+
                 if (world.getPlayers().size() < minPlayers) {
                     countdownTask = null;
                     cancel();
@@ -127,8 +109,10 @@ public class PillarFortune extends JavaPlugin implements Listener {
                 }
 
                 for (Player p : world.getPlayers()) {
-                    p.sendActionBar(Component.text("Starting in " + countdown + "s")
-                            .color(NamedTextColor.YELLOW));
+                    p.sendActionBar(
+                            Component.text("Starting in " + countdown + "s")
+                                    .color(NamedTextColor.YELLOW)
+                    );
                 }
                 countdown--;
             }
@@ -139,18 +123,20 @@ public class PillarFortune extends JavaPlugin implements Listener {
     // ================= GAME START =================
     private void startGame(World world) {
         gameRunning = true;
+
         alivePlayers.clear();
         alivePlayers.addAll(world.getPlayers());
 
         for (Player p : alivePlayers) {
-            addStat(p.getUniqueId(), "games");
             p.setGameMode(GameMode.SURVIVAL);
         }
 
-        for (int i = 0; i < alivePlayers.size(); i++) {
-            Player p = alivePlayers.stream().toList().get(i);
+        List<Player> players = alivePlayers.stream().toList();
 
-            double angle = 2 * Math.PI * i / alivePlayers.size();
+        for (int i = 0; i < players.size(); i++) {
+            Player p = players.get(i);
+
+            double angle = 2 * Math.PI * i / players.size();
             Location base = new Location(
                     world,
                     center.getX() + spawnRadius * Math.cos(angle),
@@ -161,8 +147,14 @@ public class PillarFortune extends JavaPlugin implements Listener {
             for (int y = 0; y < pillarHeight; y++) {
                 base.clone().add(0, y, 0).getBlock().setType(Material.BEDROCK);
             }
+
             p.teleport(base.clone().add(0, pillarHeight + 1, 0));
         }
+
+        world.sendMessage(
+                Component.text("Pillar of Fortune started!")
+                        .color(NamedTextColor.GREEN)
+        );
 
         startLava(world);
     }
@@ -176,12 +168,19 @@ public class PillarFortune extends JavaPlugin implements Listener {
             public void run() {
                 for (int x = -platformRadius; x <= platformRadius; x++) {
                     for (int z = -platformRadius; z <= platformRadius; z++) {
+
                         if (x * x + z * z > platformRadius * platformRadius) continue;
 
-                        Location l = new Location(world,
-                                center.getX() + x, lavaY, center.getZ() + z);
-                        if (l.getBlock().getType() == Material.AIR)
+                        Location l = new Location(
+                                world,
+                                center.getX() + x,
+                                lavaY,
+                                center.getZ() + z
+                        );
+
+                        if (l.getBlock().getType() == Material.AIR) {
                             l.getBlock().setType(Material.LAVA);
+                        }
                     }
                 }
                 lavaY++;
@@ -194,6 +193,7 @@ public class PillarFortune extends JavaPlugin implements Listener {
     @EventHandler
     public void onDeath(PlayerDeathEvent e) {
         Player p = e.getEntity();
+
         if (!alivePlayers.remove(p)) return;
 
         p.setGameMode(GameMode.SPECTATOR);
@@ -205,12 +205,16 @@ public class PillarFortune extends JavaPlugin implements Listener {
         if (alivePlayers.size() != 1) return;
 
         Player winner = alivePlayers.iterator().next();
-        addStat(winner.getUniqueId(), "wins");
 
-        world.sendMessage(Component.text(winner.getName() + " won!")
-                .color(NamedTextColor.GOLD));
+        world.sendMessage(
+                Component.text(winner.getName() + " won Pillar of Fortune!")
+                        .color(NamedTextColor.GOLD)
+        );
 
-        if (lavaTask != null) lavaTask.cancel();
+        if (lavaTask != null) {
+            lavaTask.cancel();
+            lavaTask = null;
+        }
 
         Bukkit.getScheduler().runTaskLater(this, () -> restartGame(world), 200L);
     }
@@ -223,12 +227,5 @@ public class PillarFortune extends JavaPlugin implements Listener {
             p.teleport(center);
             p.setGameMode(GameMode.ADVENTURE);
         }
-    }
-
-    // ================= STATS UTILS =================
-    private void addStat(UUID uuid, String key) {
-        String path = uuid + "." + key;
-        stats.set(path, stats.getInt(path) + 1);
-        saveStats();
     }
 }
