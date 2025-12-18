@@ -1,0 +1,4 @@
+name: PillarFortune
+version: 1.0
+main: me.soham.pillarfortune.PillarFortune
+api-version: 1.20
